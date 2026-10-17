@@ -1,0 +1,6 @@
+/sinty-initramfs
+*.test
+*.out
+
+.DS_Store
+*.swp
