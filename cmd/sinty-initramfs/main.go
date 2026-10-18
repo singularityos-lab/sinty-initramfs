@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -130,14 +131,26 @@ func (s *state) rescue(reason string) {
 	for _, p := range boot.Partitions() {
 		devs = append(devs, p.Dev)
 	}
-	fmt.Fprintf(&b, "block: %s\ndmesg_tail:\n%s\nSINTYRESCUE_END\n", strings.Join(devs, " "), kernelLogTail(30))
+	fmt.Fprintf(&b, "block: %s\n", strings.Join(devs, " "))
+	s.slotReport(&b)
+	fmt.Fprintf(&b, "dmesg_tail:\n%s\nSINTYRESCUE_END\n", kernelLogTail(60))
 	saved := boot.SaveDiagnostics("SINTYLOGS", "SINTYRESCUE.txt", b.String())
+	savedESP := saveToESP("SINTYRESCUE.txt", b.String())
 	if tty, err := os.OpenFile("/dev/tty0", os.O_WRONLY, 0); err == nil {
 		where := "Diagnostics could not be saved."
-		if saved {
+		switch {
+		case saved:
 			where = "Diagnostics saved to SINTYLOGS."
+		case savedESP:
+			where = "Diagnostics saved to the ESP as EFI/atom/state/SINTYRESCUE.txt."
 		}
-		fmt.Fprintf(tty, "\nSinty OS could not boot: %s\n%s\n", reason, where)
+		var short strings.Builder
+		s.slotReport(&short)
+		report := short.String()
+		if i := strings.Index(report, "mounts:"); i >= 0 {
+			report = report[:i]
+		}
+		fmt.Fprintf(tty, "\n%s\nSinty OS could not boot: %s\n%s\n", report, reason, where)
 		tty.Close()
 	}
 	boot.Rescue(reason, s.unlocked, rescueSh)
@@ -159,4 +172,67 @@ func kernelLogTail(lines int) string {
 		all = all[len(all)-lines:]
 	}
 	return strings.Join(all, "\n")
+}
+
+func (s *state) slotReport(b *strings.Builder) {
+	files, _ := filepath.Glob("/sysdata/boot/rootfs/*")
+	fmt.Fprintf(b, "slot_files:\n")
+	for _, f := range files {
+		if st, err := os.Stat(f); err == nil {
+			fmt.Fprintf(b, "  %s size=%d mtime=%s\n", f, st.Size(), st.ModTime().UTC().Format("2006-01-02T15:04:05Z"))
+		} else {
+			fmt.Fprintf(b, "  %s stat=%v\n", f, err)
+		}
+	}
+	for _, d := range s.media.SlotDatas {
+		fmt.Fprintf(b, "data %s bytes=%d erofs=%v\n", d, boot.DevBytes(d), boot.HasEROFS(d))
+	}
+	for _, h := range s.media.SlotHashes {
+		root, sb, err := boot.VerityRootHash(h)
+		if err != nil {
+			fmt.Fprintf(b, "hash %s bytes=%d error=%v\n", h, boot.DevBytes(h), err)
+			continue
+		}
+		fmt.Fprintf(b, "hash %s bytes=%d root=%s blocks=%d match=%v\n", h, boot.DevBytes(h), root, sb.DataBlocks, strings.EqualFold(root, s.hash))
+	}
+	for _, d := range s.media.SlotDatas {
+		for _, h := range s.media.SlotHashes {
+			boot.CloseVerity("vdiag")
+			node, err := boot.OpenVerity("vdiag", d, h, s.hash)
+			if err != nil {
+				fmt.Fprintf(b, "pair %s+%s open=%v\n", d, h, err)
+				continue
+			}
+			fmt.Fprintf(b, "pair %s+%s open=ok erofs=%v\n", d, h, boot.HasEROFS(node))
+			boot.CloseVerity("vdiag")
+		}
+	}
+	if m, err := os.ReadFile("/proc/mounts"); err == nil {
+		fmt.Fprintf(b, "mounts:\n%s", m)
+	}
+}
+
+// saveToESP writes the report beside the boot state on the EFI system
+// partition, which every installed disk has, so a failed boot leaves a trace
+// that the running system or another OS can read.
+func saveToESP(name, text string) bool {
+	const dir = "/run/esp-diag"
+	for _, p := range boot.Partitions() {
+		if boot.Mount(p.Dev, dir, "vfat", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "") != nil {
+			continue
+		}
+		state := filepath.Join(dir, "EFI", "atom", "state")
+		if _, err := os.Stat(filepath.Join(dir, "EFI", "atom")); err != nil {
+			syscall.Unmount(dir, 0)
+			continue
+		}
+		os.MkdirAll(state, 0o755)
+		err := os.WriteFile(filepath.Join(state, name), []byte(text), 0o644)
+		syscall.Sync()
+		syscall.Unmount(dir, 0)
+		if err == nil {
+			return true
+		}
+	}
+	return false
 }
