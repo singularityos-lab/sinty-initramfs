@@ -21,3 +21,22 @@ func TestInitArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestTrialPending(t *testing.T) {
+	cases := []struct {
+		state string
+		want  bool
+	}{
+		{"target=next\ntrial=1\nattempts=2\n", true},
+		{"target=next\ntrial=1\nattempts=0\n", true},
+		{"target=active\ntrial=0\nattempts=0\n", false},
+		{"target=next\ntrial=0\nattempts=0\n", false},
+		{"target=recovery\n", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := trialPending(c.state); got != c.want {
+			t.Errorf("trialPending(%q) = %v, want %v", c.state, got, c.want)
+		}
+	}
+}

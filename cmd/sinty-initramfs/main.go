@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mirkobrombin/atomloops/boot"
 )
@@ -153,7 +154,51 @@ func (s *state) rescue(reason string) {
 		fmt.Fprintf(tty, "\n%s\nSinty OS could not boot: %s\n%s\n", report, reason, where)
 		tty.Close()
 	}
+	if spendTrial() {
+		if tty, err := os.OpenFile("/dev/tty0", os.O_WRONLY, 0); err == nil {
+			fmt.Fprintf(tty, "The update could not start. Restarting into the previous system.\n")
+			tty.Close()
+		}
+		time.Sleep(5 * time.Second)
+		syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+	}
 	boot.Rescue(reason, s.unlocked, rescueSh)
+}
+
+func spendTrial() bool {
+	const dir = "/run/esp-trial"
+	for _, p := range boot.Partitions() {
+		if boot.Mount(p.Dev, dir, "vfat", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "") != nil {
+			continue
+		}
+		path := filepath.Join(dir, "EFI", "atom", "boot-state")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			syscall.Unmount(dir, 0)
+			continue
+		}
+		spent := false
+		if trialPending(string(b)) {
+			spent = os.WriteFile(path, []byte("target=next\ntrial=1\nattempts=0\n"), 0o644) == nil
+		}
+		syscall.Sync()
+		syscall.Unmount(dir, 0)
+		return spent
+	}
+	return false
+}
+
+func trialPending(state string) bool {
+	var next, trial bool
+	for _, line := range strings.Split(state, "\n") {
+		switch strings.TrimSpace(line) {
+		case "target=next":
+			next = true
+		case "trial=1":
+			trial = true
+		}
+	}
+	return next && trial
 }
 
 func kernelLogTail(lines int) string {
