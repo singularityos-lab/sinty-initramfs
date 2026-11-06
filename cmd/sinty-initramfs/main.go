@@ -36,7 +36,7 @@ type state struct {
 
 func main() {
 	boot.MountEarly()
-	boot.LoadModules("crc16", "mbcache", "jbd2", "ext4")
+	boot.LoadModules("crc16", "mbcache", "jbd2", "ext4", "efivarfs")
 	s := &state{cmd: boot.ReadCmdline()}
 	s.hash = s.cmd.Value("sing.roothash")
 	if s.hash == "" {
@@ -147,8 +147,7 @@ func (s *state) repairData(e *boot.DataUnmountableError) bool {
 		say("Checking the data partition...")
 		r := boot.RepairF2FS(p.Dev, boot.RunCommand)
 		boot.LogDataRepair(r)
-		fmt.Fprintf(&b, "SINTYREPAIR dev=%s verdict=%s fixed=%v failed=%q\n", r.Dev, r.Verdict, r.Fixed, r.Failed)
-		fmt.Fprintf(&b, "--- check\n%s\n--- fix\n%s\n--- recheck\n%s\n", r.Before, r.Fix, r.After)
+		b.WriteString(r.Report("SINTYREPAIR"))
 		switch {
 		case r.Fixed:
 			say("The data partition was repaired. Starting Sinty OS.")
