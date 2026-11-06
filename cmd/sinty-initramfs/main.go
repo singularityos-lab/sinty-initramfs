@@ -172,9 +172,34 @@ func say(format string, a ...any) {
 	}
 }
 
+func (s *state) diagnose() boot.Diagnosis {
+	f := boot.Facts{
+		Partitions: boot.Partitions(),
+		Media:      s.media,
+		KernelLog:  kernelLogTail(4000),
+	}
+	f.SlotFiles, _ = filepath.Glob("/sysdata/boot/rootfs/rootfs-*.erofs")
+	f.HashFiles, _ = filepath.Glob("/sysdata/boot/rootfs/rootfs-*.hash")
+	for _, h := range s.media.SlotHashes {
+		if root, _, err := boot.VerityRootHash(h); err == nil && strings.EqualFold(root, s.hash) {
+			f.HashMatch = true
+		}
+	}
+	return boot.Diagnose(f)
+}
+
+func dataFault(code string) bool {
+	switch code {
+	case "B02", "B03", "B04", "B05":
+		return true
+	}
+	return false
+}
+
 func (s *state) rescue(reason string) {
+	d := s.diagnose()
 	var b strings.Builder
-	fmt.Fprintf(&b, "SINTYRESCUE_BEGIN\nreason: %s\n", reason)
+	fmt.Fprintf(&b, "SINTYRESCUE_BEGIN\n%sreason: %s\n", d, reason)
 	fmt.Fprintf(&b, "cmdline: %s\n", strings.Join(s.cmd, " "))
 	fmt.Fprintf(&b, "roothash=%s\n", s.hash)
 	fmt.Fprintf(&b, "data=%s slots=%v hashes=%v optical=%s\n", s.media.DataDev, s.media.SlotDatas, s.media.SlotHashes, s.media.ISODev)
@@ -205,10 +230,15 @@ func (s *state) rescue(reason string) {
 		if i := strings.Index(report, "mounts:"); i >= 0 {
 			report = report[:i]
 		}
-		fmt.Fprintf(tty, "\n%s\nSinty OS could not boot: %s\n%s\n", report, reason, where)
+		fmt.Fprintf(tty, "\n%s\nSinty OS could not boot (%s): %s\nWhat to do: %s\n%s\n", report, d.Code, d.Cause, d.Action, where)
 		tty.Close()
 	}
-	if spendTrial() {
+	if !d.RollbackHelps && dataFault(d.Code) && requestRecovery() {
+		say("The previous system lives on the same partition. Starting Sinty Recovery.")
+		time.Sleep(5 * time.Second)
+		syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+	}
+	if d.RollbackHelps && spendTrial() {
 		if tty, err := os.OpenFile("/dev/tty0", os.O_WRONLY, 0); err == nil {
 			fmt.Fprintf(tty, "The update could not start. Restarting into the previous system.\n")
 			tty.Close()
@@ -238,6 +268,34 @@ func spendTrial() bool {
 		syscall.Sync()
 		syscall.Unmount(dir, 0)
 		return spent
+	}
+	return false
+}
+
+// requestRecovery points the loader at the recovery slot for the next boot,
+// when the ESP carries a signed one.
+func requestRecovery() bool {
+	const dir = "/run/esp-recovery"
+	for _, p := range boot.Partitions() {
+		if boot.Mount(p.Dev, dir, "vfat", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "") != nil {
+			continue
+		}
+		atom := filepath.Join(dir, "EFI", "atom")
+		ok := false
+		_, errImg := os.Stat(filepath.Join(atom, "kernelcache-recovery.efi"))
+		_, errSig := os.Stat(filepath.Join(atom, "kernelcache-recovery.efi.sig"))
+		if errImg == nil && errSig == nil {
+			tmp := filepath.Join(atom, ".boot-state.recovery")
+			if os.WriteFile(tmp, []byte("target=recovery\ntrial=0\nattempts=0\n"), 0o644) == nil {
+				syscall.Sync()
+				ok = os.Rename(tmp, filepath.Join(atom, "boot-state")) == nil
+			}
+		}
+		syscall.Sync()
+		syscall.Unmount(dir, 0)
+		if ok {
+			return true
+		}
 	}
 	return false
 }
