@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,6 +56,10 @@ func main() {
 	if err != nil {
 		if s.unlocked {
 			s.rescue("unlocked: no erofs root partition found")
+		}
+		var unmountable *boot.DataUnmountableError
+		if errors.As(err, &unmountable) {
+			s.rescue("the data partition holding the system cannot be mounted; the root hash was never checked: " + err.Error())
 		}
 		s.rescue("no verified data/hash pair for sing.roothash: " + err.Error())
 	}
