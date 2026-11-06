@@ -156,6 +156,8 @@ func (s *state) repairData(e *boot.DataUnmountableError) bool {
 			say("The data partition could not be repaired.")
 		case r.Verdict == boot.CheckNeedsUser:
 			say("The data partition needs a repair that could remove files. Nothing was changed.")
+		case r.Verdict == boot.CheckUnrepairable:
+			say("The data partition has no valid file system records left. It cannot be repaired.")
 		default:
 			say("The check found no damage on the data partition.")
 		}
