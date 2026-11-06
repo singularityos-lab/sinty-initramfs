@@ -161,6 +161,9 @@ func (s *state) repairData(e *boot.DataUnmountableError) bool {
 			say("The check found no damage on the data partition.")
 		}
 	}
+	for _, h := range boot.DisksHealth() {
+		fmt.Fprintf(&b, "disk: %s\n", h)
+	}
 	s.repair = b.String()
 	saveToESP("SINTYREPAIR.txt", s.repair)
 	return fixed
@@ -183,6 +186,7 @@ func (s *state) diagnose() boot.Diagnosis {
 		Partitions: boot.Partitions(),
 		Media:      s.media,
 		KernelLog:  kernelLogTail(4000),
+		Disks:      boot.DisksHealth(),
 	}
 	f.SlotFiles, _ = filepath.Glob("/sysdata/boot/rootfs/rootfs-*.erofs")
 	f.HashFiles, _ = filepath.Glob("/sysdata/boot/rootfs/rootfs-*.hash")
@@ -218,12 +222,15 @@ func (s *state) rescue(reason string) {
 		devs = append(devs, p.Dev)
 	}
 	fmt.Fprintf(&b, "block: %s\n", strings.Join(devs, " "))
+	for _, h := range boot.DisksHealth() {
+		fmt.Fprintf(&b, "disk: %s\n", h)
+	}
 	s.slotReport(&b)
 	b.WriteString(s.repair)
 	fmt.Fprintf(&b, "dmesg_tail:\n%s\nSINTYRESCUE_END\n", kernelLogTail(60))
 	saved := boot.SaveDiagnostics("SINTYLOGS", "SINTYRESCUE.txt", b.String())
 	savedESP := saveToESP("SINTYRESCUE.txt", b.String())
-	if !d.RollbackHelps && dataFault(d.Code) && requestRecovery() {
+	if !d.RollbackHelps && dataFault(d.Code) && requestRecovery(d) {
 		say("Sinty OS could not start: %s.", d.Cause)
 		say("Starting Sinty Recovery...")
 		time.Sleep(4 * time.Second)
@@ -231,6 +238,12 @@ func (s *state) rescue(reason string) {
 	}
 	if d.RollbackHelps && spendTrial() {
 		say("The update could not start. Restarting into the previous system...")
+		time.Sleep(4 * time.Second)
+		syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+	}
+	if !s.unlocked && requestRecovery(d) {
+		say("Sinty OS could not start: %s.", d.Cause)
+		say("Starting Sinty Recovery...")
 		time.Sleep(4 * time.Second)
 		syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
 	}
@@ -279,8 +292,8 @@ func spendTrial() bool {
 }
 
 // requestRecovery points the loader at the recovery slot for the next boot,
-// when the ESP carries a signed one.
-func requestRecovery() bool {
+// when the ESP carries a signed one, and leaves the diagnosis for it to show.
+func requestRecovery(d boot.Diagnosis) bool {
 	const dir = "/run/esp-recovery"
 	for _, p := range boot.Partitions() {
 		if boot.Mount(p.Dev, dir, "vfat", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "") != nil {
@@ -291,6 +304,9 @@ func requestRecovery() bool {
 		_, errImg := os.Stat(filepath.Join(atom, "kernelcache-recovery.efi"))
 		_, errSig := os.Stat(filepath.Join(atom, "kernelcache-recovery.efi.sig"))
 		if errImg == nil && errSig == nil {
+			if os.MkdirAll(filepath.Join(atom, "state"), 0o755) == nil {
+				os.WriteFile(filepath.Join(atom, "state", "recovery-reason"), []byte(d.Code+": "+d.Cause+"\n"), 0o644)
+			}
 			tmp := filepath.Join(atom, ".boot-state.recovery")
 			if os.WriteFile(tmp, []byte("target=recovery\ntrial=0\nattempts=0\n"), 0o644) == nil {
 				syscall.Sync()
