@@ -31,6 +31,7 @@ type state struct {
 	unlocked bool
 	media    boot.Media
 	root     *boot.Root
+	repair   string
 }
 
 func main() {
@@ -53,11 +54,14 @@ func main() {
 	}
 	ops := boot.SystemOps()
 	root, err := boot.SelectRoot(cfg, &s.media, ops)
+	var unmountable *boot.DataUnmountableError
+	if errors.As(err, &unmountable) && s.repairData(unmountable) {
+		root, err = boot.SelectRoot(cfg, &s.media, ops)
+	}
 	if err != nil {
 		if s.unlocked {
 			s.rescue("unlocked: no erofs root partition found")
 		}
-		var unmountable *boot.DataUnmountableError
 		if errors.As(err, &unmountable) {
 			s.rescue("the data partition holding the system cannot be mounted; the root hash was never checked: " + err.Error())
 		}
@@ -124,6 +128,50 @@ func (s *state) restoreFirstBoot() {
 	boot.Logf("first boot: OOBE login setup restored")
 }
 
+// repairData checks every F2FS partition the kernel refused to mount and
+// repairs the ones whose damage is accounting only. It reports whether one was
+// repaired, so the root can be looked for again; anything that could remove
+// files is left to the user in recovery.
+func (s *state) repairData(e *boot.DataUnmountableError) bool {
+	if _, err := os.Stat(boot.F2FSChecker); err != nil {
+		boot.Logf("no %s in the initramfs, data partition not checked", boot.F2FSChecker)
+		return false
+	}
+	var b strings.Builder
+	fixed := false
+	for _, p := range e.Partitions {
+		if p.FS != "f2fs" {
+			continue
+		}
+		say("Checking the data partition %s...", p.Dev)
+		r := boot.RepairF2FS(p.Dev, boot.RunCommand)
+		fmt.Fprintf(&b, "SINTYREPAIR dev=%s verdict=%s fixed=%v failed=%q\n", r.Dev, r.Verdict, r.Fixed, r.Failed)
+		fmt.Fprintf(&b, "--- check\n%s\n--- fix\n%s\n--- recheck\n%s\n", r.Before, r.Fix, r.After)
+		switch {
+		case r.Fixed:
+			say("The data partition was repaired. Starting Sinty OS.")
+			fixed = true
+		case r.Verdict == boot.CheckAccounting:
+			say("The data partition could not be repaired.")
+		case r.Verdict == boot.CheckNeedsUser:
+			say("The data partition needs a repair that could remove files. Nothing was changed.")
+		default:
+			say("The check found no damage on the data partition.")
+		}
+	}
+	s.repair = b.String()
+	saveToESP("SINTYREPAIR.txt", s.repair)
+	return fixed
+}
+
+func say(format string, a ...any) {
+	boot.Logf(format, a...)
+	if tty, err := os.OpenFile("/dev/tty0", os.O_WRONLY, 0); err == nil {
+		fmt.Fprintf(tty, format+"\n", a...)
+		tty.Close()
+	}
+}
+
 func (s *state) rescue(reason string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "SINTYRESCUE_BEGIN\nreason: %s\n", reason)
@@ -139,6 +187,7 @@ func (s *state) rescue(reason string) {
 	}
 	fmt.Fprintf(&b, "block: %s\n", strings.Join(devs, " "))
 	s.slotReport(&b)
+	b.WriteString(s.repair)
 	fmt.Fprintf(&b, "dmesg_tail:\n%s\nSINTYRESCUE_END\n", kernelLogTail(60))
 	saved := boot.SaveDiagnostics("SINTYLOGS", "SINTYRESCUE.txt", b.String())
 	savedESP := saveToESP("SINTYRESCUE.txt", b.String())
