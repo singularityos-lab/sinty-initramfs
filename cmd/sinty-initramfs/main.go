@@ -143,7 +143,8 @@ func (s *state) repairData(e *boot.DataUnmountableError) bool {
 		if p.FS != "f2fs" {
 			continue
 		}
-		say("Checking the data partition %s...", p.Dev)
+		boot.Logf("checking %s", p.Dev)
+		say("Checking the data partition...")
 		r := boot.RepairF2FS(p.Dev, boot.RunCommand)
 		fmt.Fprintf(&b, "SINTYREPAIR dev=%s verdict=%s fixed=%v failed=%q\n", r.Dev, r.Verdict, r.Fixed, r.Failed)
 		fmt.Fprintf(&b, "--- check\n%s\n--- fix\n%s\n--- recheck\n%s\n", r.Before, r.Fix, r.After)
@@ -166,6 +167,10 @@ func (s *state) repairData(e *boot.DataUnmountableError) bool {
 
 func say(format string, a ...any) {
 	boot.Logf(format, a...)
+	if d := openScreen(); d != nil {
+		d.line(fmt.Sprintf(format, a...))
+		return
+	}
 	if tty, err := os.OpenFile("/dev/tty0", os.O_WRONLY, 0); err == nil {
 		fmt.Fprintf(tty, format+"\n", a...)
 		tty.Close()
@@ -216,6 +221,18 @@ func (s *state) rescue(reason string) {
 	fmt.Fprintf(&b, "dmesg_tail:\n%s\nSINTYRESCUE_END\n", kernelLogTail(60))
 	saved := boot.SaveDiagnostics("SINTYLOGS", "SINTYRESCUE.txt", b.String())
 	savedESP := saveToESP("SINTYRESCUE.txt", b.String())
+	if !d.RollbackHelps && dataFault(d.Code) && requestRecovery() {
+		say("Sinty OS could not start: %s.", d.Cause)
+		say("Starting Sinty Recovery...")
+		time.Sleep(4 * time.Second)
+		syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+	}
+	if d.RollbackHelps && spendTrial() {
+		say("The update could not start. Restarting into the previous system...")
+		time.Sleep(4 * time.Second)
+		syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+	}
+	textMode()
 	if tty, err := os.OpenFile("/dev/tty0", os.O_WRONLY, 0); err == nil {
 		where := "Diagnostics could not be saved."
 		switch {
@@ -232,19 +249,6 @@ func (s *state) rescue(reason string) {
 		}
 		fmt.Fprintf(tty, "\n%s\nSinty OS could not boot (%s): %s\nWhat to do: %s\n%s\n", report, d.Code, d.Cause, d.Action, where)
 		tty.Close()
-	}
-	if !d.RollbackHelps && dataFault(d.Code) && requestRecovery() {
-		say("The previous system lives on the same partition. Starting Sinty Recovery.")
-		time.Sleep(5 * time.Second)
-		syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
-	}
-	if d.RollbackHelps && spendTrial() {
-		if tty, err := os.OpenFile("/dev/tty0", os.O_WRONLY, 0); err == nil {
-			fmt.Fprintf(tty, "The update could not start. Restarting into the previous system.\n")
-			tty.Close()
-		}
-		time.Sleep(5 * time.Second)
-		syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
 	}
 	boot.Rescue(reason, s.unlocked, rescueSh)
 }
