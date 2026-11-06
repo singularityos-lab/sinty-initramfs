@@ -146,6 +146,7 @@ func (s *state) repairData(e *boot.DataUnmountableError) bool {
 		boot.Logf("checking %s", p.Dev)
 		say("Checking the data partition...")
 		r := boot.RepairF2FS(p.Dev, boot.RunCommand)
+		boot.LogDataRepair(r)
 		fmt.Fprintf(&b, "SINTYREPAIR dev=%s verdict=%s fixed=%v failed=%q\n", r.Dev, r.Verdict, r.Fixed, r.Failed)
 		fmt.Fprintf(&b, "--- check\n%s\n--- fix\n%s\n--- recheck\n%s\n", r.Before, r.Fix, r.After)
 		switch {
@@ -203,6 +204,7 @@ func dataFault(code string) bool {
 
 func (s *state) rescue(reason string) {
 	d := s.diagnose()
+	boot.LogDiagnosis(d)
 	var b strings.Builder
 	fmt.Fprintf(&b, "SINTYRESCUE_BEGIN\n%sreason: %s\n", d, reason)
 	fmt.Fprintf(&b, "cmdline: %s\n", strings.Join(s.cmd, " "))
