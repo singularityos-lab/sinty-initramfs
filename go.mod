@@ -3,7 +3,7 @@ module github.com/singularityos-lab/sinty-initramfs
 go 1.26
 
 require (
-	github.com/mirkobrombin/atomloops v0.2.10-0.20261110151000-0afe50515b7a
+	github.com/mirkobrombin/atomloops v0.2.10-0.20261111050949-09d81aaf00a8
 	golang.org/x/image v0.45.0
 )
 
