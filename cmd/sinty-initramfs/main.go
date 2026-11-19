@@ -38,6 +38,7 @@ func main() {
 	boot.MountEarly()
 	boot.LoadModules("crc16", "mbcache", "jbd2", "ext4", "efivarfs")
 	s := &state{cmd: boot.ReadCmdline()}
+	applyDisplayQuirks()
 	s.hash = s.cmd.Value("sing.roothash")
 	if s.hash == "" {
 		s.rescue("no sing.roothash= on the kernel command line")
@@ -60,6 +61,10 @@ func main() {
 		PortableHash: "sing-portable-hash",
 		Unlocked:     s.unlocked,
 		AnchorKey:    anchorKey,
+		DataPart:     s.cmd.Value("sing.datapart"),
+	}
+	if cfg.DataPart != "" {
+		cfg.Attempts = 300
 	}
 	ops := boot.SystemOps()
 	root, err := boot.SelectRoot(cfg, &s.media, ops)
