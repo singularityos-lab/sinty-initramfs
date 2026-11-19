@@ -42,6 +42,14 @@ func main() {
 	if s.hash == "" {
 		s.rescue("no sing.roothash= on the kernel command line")
 	}
+	var anchorKey []byte
+	if s.hash == "anchor" {
+		key, err := os.ReadFile(fwRootPub)
+		if err != nil {
+			s.rescue("anchor boot without the release root key: " + err.Error())
+		}
+		anchorKey, s.hash = key, ""
+	}
 	s.unlocked = boot.DeviceUnlocked(sintykey)
 
 	cfg := boot.Config{
@@ -51,6 +59,7 @@ func main() {
 		PortableRoot: "sing-portable-root",
 		PortableHash: "sing-portable-hash",
 		Unlocked:     s.unlocked,
+		AnchorKey:    anchorKey,
 	}
 	ops := boot.SystemOps()
 	root, err := boot.SelectRoot(cfg, &s.media, ops)
@@ -68,6 +77,9 @@ func main() {
 		s.rescue("no verified data/hash pair for sing.roothash: " + err.Error())
 	}
 	s.root = root
+	if anchorKey != nil {
+		s.hash = s.media.Anchor.Manifest.RootFSVerityHash
+	}
 	if s.unlocked {
 		boot.Logf("==================================================================")
 		boot.Logf(" DEVICE UNLOCKED - verified boot is OFF, this system is not sealed")
@@ -84,6 +96,9 @@ func main() {
 	}
 	if installed {
 		s.restoreFirstBoot()
+	}
+	if err := s.media.CommitAnchorBoot(); err != nil {
+		boot.Logf("anchor boot: %v", err)
 	}
 	boot.MountESP(&s.media, root)
 	init := boot.FindInit(s.cmd.Value("init"), "/sbin/init", "/usr/lib/sinit/sinit")
